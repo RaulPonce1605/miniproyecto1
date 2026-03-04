@@ -67,8 +67,57 @@ function goTo(n) {
   if (n === 8) renderInfo();
   if (n === 9) initDrawScreen();
 
+  // ── ENTER para continuar en cada pantalla ──
+  setupEnterKey(n);
+
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
+
+// Mapa de acción por pantalla al presionar Enter
+function setupEnterKey(n) {
+  // Quitar listener anterior para evitar duplicados
+  document.removeEventListener("keydown", _enterHandler);
+
+  const actions = {
+    0: () => goTo(1), // Splash → comenzar
+    1: () => step1Next(), // Organizador → siguiente
+    2: () => step2Next(), // Participantes → siguiente (Enter en input ya añade fila, solo si campo vacío)
+    3: () => step3Next(), // Exclusiones → siguiente
+    4: () => step4Next(), // Tipo evento → siguiente
+    5: () => step5Next(), // Fecha → siguiente
+    6: () => step6Next(), // Presupuesto → siguiente
+  };
+
+  if (!actions[n]) return;
+
+  _enterHandler = (e) => {
+    // No disparar si el foco está en un input de participantes (ahí Enter añade fila)
+    if (
+      n === 2 &&
+      e.target &&
+      e.target.closest &&
+      e.target.closest("#participantList")
+    )
+      return;
+    // No disparar dentro de inputs de texto en general (excepto pantalla 1 y 6)
+    if (
+      n !== 1 &&
+      n !== 6 &&
+      e.target &&
+      ["INPUT", "TEXTAREA"].includes(e.target.tagName)
+    )
+      return;
+    if (e.key === "Enter") {
+      e.preventDefault();
+      actions[n]();
+    }
+  };
+
+  document.addEventListener("keydown", _enterHandler);
+}
+
+// Referencia global al handler para poder removerlo
+let _enterHandler = null;
 
 function updateStepBar(active) {
   for (let i = 1; i <= 6; i++) {
@@ -92,7 +141,7 @@ function updateStepBar(active) {
 function step1Next() {
   const name = document.getElementById("organizerName").value.trim();
   if (!name) {
-    toast("Por favor ingresa tu nombre 😊");
+    showToast("Por favor ingresa tu nombre", "warning");
     return;
   }
   const inc = document.getElementById("includeOrganizer").checked;
@@ -171,7 +220,7 @@ function renderParticipants() {
         partsCopy.splice(toIdx, 0, moved);
         patchLS({ participants: partsCopy });
         renderParticipants();
-        toast("Orden actualizado 🔀");
+        showToast("Orden actualizado", "info");
       }
     });
 
@@ -180,14 +229,22 @@ function renderParticipants() {
 }
 
 function updateParticipant(i, val) {
+  // Solo permitir letras (incluyendo acentos y ñ) y espacios
+  const cleaned = val.replace(/[^a-zA-ZáéíóúÁÉÍÓÚüÜñÑ\s]/g, "");
+  if (cleaned !== val) {
+    const inputs = document.querySelectorAll("#participantList input");
+    if (inputs[i]) inputs[i].value = cleaned;
+    showToast("Solo se permiten letras en los nombres", "warning");
+  }
   const parts = loadLS().participants || [];
-  parts[i] = val;
+  parts[i] = cleaned;
   patchLS({ participants: parts });
   // Actualizar letra del avatar en tiempo real
   const items = document.querySelectorAll(".participant-item");
   if (items[i]) {
     const av = items[i].querySelector(".avatar");
-    if (av) av.textContent = val ? val.charAt(0).toUpperCase() : "?";
+    if (av)
+      av.textContent = cleaned ? cleaned.trim().charAt(0).toUpperCase() : "?";
   }
 }
 
@@ -211,9 +268,25 @@ function removeParticipant(i) {
 }
 
 function step2Next() {
-  const parts = (loadLS().participants || []).filter((p) => p.trim());
+  const allParts = loadLS().participants || [];
+  const parts = allParts.filter((p) => p.trim().length >= 2);
+
+  // Detectar nombres de una sola letra o sin sentido
+  const invalid = allParts.filter(
+    (p) => p.trim().length > 0 && p.trim().length < 2,
+  );
+  if (invalid.length > 0) {
+    showToast(
+      `El nombre "${invalid[0]}" es muy corto. Escribe un nombre real.`,
+      "warning",
+    );
+    return;
+  }
   if (parts.length < 2) {
-    toast("Necesitas al menos 2 participantes 👥");
+    showToast(
+      "Necesitas al menos 2 participantes con nombres válidos",
+      "error",
+    );
     return;
   }
   patchLS({ participants: parts, exclusions: {} });
@@ -319,7 +392,7 @@ function toggleShowMore() {
 
 function step4Next() {
   if (!selectedEventType) {
-    toast("Selecciona un tipo de evento 🎊");
+    showToast("Selecciona un tipo de evento", "warning");
     return;
   }
   const custom = document.getElementById("customEventName").value.trim();
@@ -468,7 +541,7 @@ function showSelectedDate(lbl) {
 
 function step5Next() {
   if (!selectedDate) {
-    toast("Por favor selecciona una fecha 📅");
+    showToast("Por favor selecciona una fecha", "warning");
     return;
   }
   goTo(6);
@@ -507,17 +580,17 @@ function step6Next() {
   if (otherBudgetOpen) {
     const v = parseFloat(document.getElementById("customBudget").value);
     if (!v || v <= 0) {
-      toast("Ingresa un presupuesto válido 💰");
+      showToast("Ingresa un presupuesto válido", "warning");
       return;
     }
     budget = v;
   }
   if (!budget) {
-    toast("Selecciona un presupuesto 💰");
+    showToast("Selecciona un presupuesto", "warning");
     return;
   }
   patchLS({ budget });
-  toast("¡Datos guardados en LocalStorage! 🎉");
+  showToast("¡Datos guardados en LocalStorage!", "success");
   goTo(7);
 }
 
@@ -600,11 +673,12 @@ function initDrawScreen() {
 
 function performDraw() {
   const data = loadLS();
-  const parts = (data.participants || []).filter((p) => p.trim());
+  // Filtrar participantes con al menos 2 caracteres (evita nombres inválidos como "k")
+  const parts = (data.participants || []).filter((p) => p.trim().length >= 2);
   const excl = data.exclusions || {};
 
   if (parts.length < 2) {
-    toast("No hay suficientes participantes");
+    toast("Necesitas al menos 2 participantes con nombres válidos 👥");
     return;
   }
 
@@ -631,17 +705,34 @@ function performDraw() {
       div.className = "draw-result-item";
       div.style.animationDelay = `${i * 0.12}s`;
       div.innerHTML = `
-        <span style="font-size:1.2rem">🎁</span>
-        <span class="giver">${escHtml(giver)}</span>
-        <span class="arrow">→</span>
-        <span class="receiver">${escHtml(receiver)}</span>
+        <span class="result-num">${i + 1}</span>
+        <span class="result-giver">🎁 ${escHtml(giver)}</span>
+        <span class="result-arrow">→</span>
+        <span class="result-receiver">${escHtml(receiver)}</span>
       `;
       list.appendChild(div);
     });
 
+    // Título explicativo encima de los resultados
+    const title = document.getElementById("drawResultTitle");
+    if (title)
+      title.innerHTML =
+        "🎁 <strong>Quién da</strong> &nbsp;→&nbsp; <strong>A quién</strong>";
+
     document.getElementById("drawResults").classList.remove("hidden");
     patchLS({ lastDraw: result, lastDrawDate: new Date().toISOString() });
-    toast("¡Sorteo realizado con éxito! 🎉");
+    showToast("¡Sorteo realizado con éxito! 🎉", "success");
+    // Confetti modal
+    setTimeout(() => {
+      showModal({
+        icon: "🎉",
+        title: "¡Sorteo completado!",
+        message: `Se asignaron ${result.length} regalos correctamente. ¡Que disfruten el intercambio!`,
+        confirmText: "¡Genial! 🎁",
+        confirmClass: "btn-success-modal",
+        onConfirm: null,
+      });
+    }, 600);
   }, 1400);
 }
 
@@ -685,30 +776,166 @@ function shuffleWithExclusions(parts, excl) {
 }
 
 // ══════════════════════════════════
-//  RESET
+//  EDITAR PASO DESDE DASHBOARD
 // ══════════════════════════════════
-function confirmReset() {
-  if (
-    confirm(
-      "¿Estás seguro de que deseas borrar todos los datos y comenzar desde cero?",
-    )
-  ) {
-    localStorage.removeItem(LS_KEY);
-    toast("Datos borrados 🗑️");
-    setTimeout(() => goTo(0), 600);
-  }
+function editStep(step) {
+  const labels = {
+    1: "el organizador",
+    2: "los participantes",
+    3: "las exclusiones",
+    4: "el tipo de evento",
+    5: "la fecha",
+    6: "el presupuesto",
+  };
+  showModal({
+    icon: "✏️",
+    title: `Editar ${labels[step]}`,
+    message: `Regresarás al paso ${step} para modificar ${labels[step]}. Los datos anteriores se conservan.`,
+    confirmText: "Sí, ir a editar",
+    confirmClass: "btn-confirm-modal",
+    cancelText: "Cancelar",
+    onConfirm: () => {
+      // Limpiar datos a partir del paso que se va a editar
+      if (step <= 2) patchLS({ participants: [], exclusions: {} });
+      if (step <= 3) patchLS({ exclusions: {} });
+      goTo(step);
+      showToast(`Editando: ${labels[step]}`, "info");
+    },
+  });
 }
 
 // ══════════════════════════════════
-//  TOAST NOTIFICATIONS
+//  RESET
 // ══════════════════════════════════
-function toast(msg) {
+function confirmReset() {
+  showModal({
+    icon: "🗑️",
+    title: "¿Borrar todo?",
+    message:
+      "Se eliminarán todos los datos del sorteo y comenzarás desde cero.",
+    confirmText: "Sí, borrar",
+    confirmClass: "btn-danger-modal",
+    cancelText: "Cancelar",
+    onConfirm: () => {
+      localStorage.removeItem(LS_KEY);
+      showToast("Datos borrados correctamente", "success");
+      setTimeout(() => goTo(0), 800);
+    },
+  });
+}
+
+// ══════════════════════════════════
+//  SISTEMA DE ALERTAS BONITAS
+// ══════════════════════════════════
+
+/**
+ * Toast visual mejorado con tipos: success | error | warning | info
+ */
+function showToast(msg, type = "info") {
   const c = document.getElementById("toastContainer");
   const el = document.createElement("div");
+  const icons = { success: "✅", error: "❌", warning: "⚠️", info: "💬" };
+  const colors = {
+    success: "linear-gradient(135deg,#2a9d8f,#21867a)",
+    error: "linear-gradient(135deg,#e63946,#c1121f)",
+    warning: "linear-gradient(135deg,#f4a261,#e76f51)",
+    info: "linear-gradient(135deg,#1d2327,#2d3748)",
+  };
   el.className = "toast-msg";
-  el.textContent = msg;
+  el.style.background = colors[type] || colors.info;
+  el.innerHTML = `<span style="margin-right:8px;font-size:1.1rem">${icons[type]}</span>${escHtml(msg)}`;
   c.appendChild(el);
-  setTimeout(() => el.remove(), 3100);
+  setTimeout(() => el.remove(), 3400);
+}
+
+// Mantener compatibilidad con llamadas antiguas a toast()
+function toast(msg) {
+  showToast(msg, "info");
+}
+
+/**
+ * Modal de confirmación/alerta personalizado
+ * opciones: { icon, title, message, confirmText, confirmClass, cancelText, onConfirm }
+ */
+function showModal({
+  icon = "🎁",
+  title = "",
+  message = "",
+  confirmText = "Aceptar",
+  confirmClass = "btn-confirm-modal",
+  cancelText = null,
+  onConfirm = null,
+}) {
+  // Quitar modal previo si existe
+  const old = document.getElementById("giftModal");
+  if (old) old.remove();
+
+  const overlay = document.createElement("div");
+  overlay.id = "giftModal";
+  overlay.style.cssText = `
+    position:fixed;inset:0;background:rgba(0,0,0,.55);
+    display:flex;align-items:center;justify-content:center;
+    z-index:99999;animation:fadeInModal .25s ease;
+    padding:20px;
+  `;
+
+  overlay.innerHTML = `
+    <div style="
+      background:#fff;border-radius:24px;padding:36px 32px;
+      max-width:400px;width:100%;text-align:center;
+      box-shadow:0 24px 64px rgba(0,0,0,.25);
+      animation:popModal .3s cubic-bezier(.34,1.56,.64,1) both;
+    ">
+      <div style="font-size:3rem;margin-bottom:12px;line-height:1">${icon}</div>
+      <h3 style="font-family:'Nunito',sans-serif;font-weight:900;font-size:1.3rem;margin-bottom:10px;color:#1d2327">${escHtml(title)}</h3>
+      <p style="color:#666;font-size:.93rem;margin-bottom:28px;line-height:1.5">${escHtml(message)}</p>
+      <div style="display:flex;gap:12px;justify-content:center">
+        ${
+          cancelText
+            ? `<button id="modalCancel" style="
+          flex:1;padding:11px;border-radius:50px;border:2px solid #e0e0e0;
+          background:#fff;font-family:'Nunito',sans-serif;font-weight:700;
+          font-size:.95rem;cursor:pointer;color:#888;transition:all .15s;
+        ">${escHtml(cancelText)}</button>`
+            : ""
+        }
+        <button id="modalConfirm" class="${confirmClass}" style="
+          flex:1;padding:11px;border-radius:50px;border:none;
+          font-family:'Nunito',sans-serif;font-weight:800;
+          font-size:.95rem;cursor:pointer;transition:all .15s;
+        ">${escHtml(confirmText)}</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+
+  // Estilos de los botones según clase
+  const confirmBtn = overlay.querySelector("#modalConfirm");
+  if (confirmClass === "btn-danger-modal") {
+    confirmBtn.style.background = "linear-gradient(135deg,#e63946,#c1121f)";
+    confirmBtn.style.color = "#fff";
+    confirmBtn.style.boxShadow = "0 4px 14px rgba(230,57,70,.4)";
+  } else if (confirmClass === "btn-success-modal") {
+    confirmBtn.style.background = "linear-gradient(135deg,#2a9d8f,#21867a)";
+    confirmBtn.style.color = "#fff";
+    confirmBtn.style.boxShadow = "0 4px 14px rgba(42,157,143,.4)";
+  } else {
+    confirmBtn.style.background = "linear-gradient(135deg,#e63946,#c1121f)";
+    confirmBtn.style.color = "#fff";
+    confirmBtn.style.boxShadow = "0 4px 14px rgba(230,57,70,.4)";
+  }
+
+  // Eventos
+  const cancelBtn = overlay.querySelector("#modalCancel");
+  if (cancelBtn) cancelBtn.onclick = () => overlay.remove();
+  confirmBtn.onclick = () => {
+    overlay.remove();
+    if (onConfirm) onConfirm();
+  };
+  overlay.onclick = (e) => {
+    if (e.target === overlay) overlay.remove();
+  };
 }
 
 // ══════════════════════════════════
